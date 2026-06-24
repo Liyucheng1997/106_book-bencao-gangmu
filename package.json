@@ -1,0 +1,37 @@
+{
+  "name": "bencao-visual-atlas",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n API,WEB -c yellow,green \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch server/index.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "start": "tsx server/index.ts",
+    "catalog:sync": "tsx scripts/sync-catalog.ts",
+    "media:match": "tsx scripts/match-media.ts",
+    "media:batch": "tsx scripts/batch-media.ts",
+    "media:aliases": "tsx scripts/sparql-media.ts"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "cors": "latest",
+    "express": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@types/cors": "latest",
+    "@types/express": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  }
+}

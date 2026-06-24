@@ -1,0 +1,22 @@
+{
+  "total": 1712,
+  "chapters": 58,
+  "counts": {
+    "human": 37,
+    "earth": 64,
+    "shell": 46,
+    "wood": 160,
+    "water": 46,
+    "fire": 12,
+    "utensil": 79,
+    "fruit": 107,
+    "metal-stone": 163,
+    "herb": 450,
+    "vegetable": 106,
+    "bird": 76,
+    "grain": 79,
+    "insect": 105,
+    "beast": 88,
+    "scale": 94
+  }
+}
