@@ -2,5 +2,23 @@ node_modules/
 dist/
 .dev-output.log
 .dev-error.log
+.server-*.log
+.server-*.err.log
+.env
+.env.*
+!.env.example
 *.local
+data/media-manifest.backup-*.json
+data/generation-failures/
+data/generation-selection-*.json
+
+# 本地工具与缓存
+.claude/
+scripts/__pycache__/
+
+# 旧版 1:1 合成题签图（已改为前端叠加渲染，不再使用）；仅保留 raw/ 无字原图
+/public/generated-herbs/*.jpg
+/public/generated-herbs/*.png
+/public/generated-herbs/*.webp
+
 .DS_Store

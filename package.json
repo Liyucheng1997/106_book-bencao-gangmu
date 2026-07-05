@@ -1,6 +1,6 @@
 {
   "name": "bencao-visual-atlas",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "catalog:sync": "tsx scripts/sync-catalog.ts",
     "media:match": "tsx scripts/match-media.ts",
     "media:batch": "tsx scripts/batch-media.ts",
-    "media:aliases": "tsx scripts/sparql-media.ts"
+    "media:aliases": "tsx scripts/sparql-media.ts",
+    "media:nano": "tsx scripts/generate-nano-banana-images.ts"
   },
   "dependencies": {
     "cheerio": "^1.2.0",

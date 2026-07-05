@@ -16,7 +16,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
-import type { CatalogDetail, CatalogEntry, CatalogStats, Category, Stats } from './types'
+import type { CatalogDetail, CatalogEntry, CatalogStats, Category, GenerationJob, Stats } from './types'
 
 const fallbackStats: Stats = {
   volumes: 52,
@@ -29,10 +29,34 @@ const fallbackStats: Stats = {
 }
 
 const formatNumber = (value: number) => new Intl.NumberFormat('zh-CN').format(value)
+const formatUsd = (value?: number) => `$${(value || 0).toFixed(4)}`
+const isGeneratedMedia = (entry: CatalogEntry) =>
+  entry.media.provider === 'Google Gemini API / Nano Banana 2 Lite'
+  || Boolean(entry.media.generatedBy)
+  || Boolean(entry.media.thumbnailUrl?.startsWith('/generated-herbs/'))
 
 const detailKindLabels: Record<string, string> = {
   overview: '原典记述', names: '名称源流', form: '形态与产地', preparation: '采制方法',
   properties: '药性气味', uses: '主治记载', commentary: '历代阐发', prescriptions: '古方辑录', other: '相关记述',
+}
+
+const idleGeneration: GenerationJob = {
+  id: 'idle',
+  status: 'idle',
+  total: 0,
+  completed: 0,
+  succeeded: 0,
+  failed: 0,
+  reused: 0,
+  model: 'gemini-3.1-flash-lite-image',
+  mode: 'pending',
+  overwrite: false,
+  estimatedInputTokens: 0,
+  estimatedImageTokens: 0,
+  estimatedTotalTokens: 0,
+  estimatedStandardUsd: 0,
+  estimatedBatchUsd: 0,
+  logs: [],
 }
 
 function App() {
@@ -50,6 +74,13 @@ function App() {
   const [catalogCategory, setCatalogCategory] = useState('all')
   const [catalogSort, setCatalogSort] = useState<'original' | 'name'>('original')
   const [catalogLoading, setCatalogLoading] = useState(true)
+  const [catalogRefreshKey, setCatalogRefreshKey] = useState(0)
+  const [generation, setGeneration] = useState<GenerationJob>(idleGeneration)
+  const [generationMode, setGenerationMode] = useState('pending')
+  const [generationLimit, setGenerationLimit] = useState(5)
+  const [generationConcurrency, setGenerationConcurrency] = useState(1)
+  const [generationOverwrite, setGenerationOverwrite] = useState(false)
+  const [generationStyle, setGenerationStyle] = useState('labeled-note')
 
   useEffect(() => {
     Promise.all([
@@ -79,7 +110,29 @@ function App() {
       if (error.name !== 'AbortError') console.error(error)
     }).finally(() => setCatalogLoading(false))
     return () => controller.abort()
-  }, [catalogCategory, catalogPage, catalogQuery, catalogSort])
+  }, [catalogCategory, catalogPage, catalogQuery, catalogSort, catalogRefreshKey])
+
+  const fetchGeneration = () => {
+    fetch('/api/generation/status')
+      .then((response) => response.json())
+      .then((result) => {
+        setGeneration((previous) => {
+          if ((result.data?.completed || 0) > previous.completed) setCatalogRefreshKey(Date.now())
+          return result.data || idleGeneration
+        })
+      })
+      .catch((error) => console.error(error))
+  }
+
+  useEffect(() => {
+    fetchGeneration()
+  }, [])
+
+  useEffect(() => {
+    if (generation.status !== 'running') return
+    const timer = window.setInterval(fetchGeneration, 1500)
+    return () => window.clearInterval(timer)
+  }, [generation.status])
 
   useEffect(() => {
     document.body.style.overflow = selected ? 'hidden' : ''
@@ -113,6 +166,57 @@ function App() {
     setDetail(null)
     setDetailError(null)
   }
+
+  const startGeneration = (options?: { ids?: string[]; id?: string; overwrite?: boolean; limit?: number }) => {
+    fetch('/api/generation/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: generationMode,
+        limit: options?.limit ?? generationLimit,
+        concurrency: generationConcurrency,
+        overwrite: options?.overwrite ?? generationOverwrite,
+        category: catalogCategory,
+        ids: options?.ids,
+        id: options?.id,
+        style: generationStyle,
+      }),
+    })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || '生成任务启动失败')
+        setGeneration(result.data)
+      })
+      .catch((error) => {
+        setGeneration((job) => ({ ...job, status: 'failed', logs: [...job.logs, error.message].slice(-80) }))
+      })
+  }
+
+  const startCurrentPageGeneration = () => {
+    startGeneration({
+      ids: catalog.map((entry) => entry.id),
+      limit: catalog.length,
+      overwrite: false,
+    })
+  }
+
+  const startEntryGeneration = (entry: CatalogEntry) => {
+    startGeneration({
+      ids: [entry.id],
+      limit: 1,
+      overwrite: isGeneratedMedia(entry),
+    })
+  }
+
+  const stopGeneration = () => {
+    fetch('/api/generation/stop', { method: 'POST' })
+      .then((response) => response.json())
+      .then((result) => setGeneration(result.data || idleGeneration))
+  }
+
+  const generationPercent = generation.total ? Math.round((generation.completed / generation.total) * 100) : 0
+  const actualStandardUsd = generation.totals?.standardUsd
+  const actualBatchUsd = generation.totals?.batchUsd
 
   return (
     <main>
@@ -184,15 +288,20 @@ function App() {
         <div className="taxonomy-layout">
           <div className="taxonomy-compass">
             <div className="compass-ring ring-outer" />
+            <div className="compass-ring ring-ticks" />
             <div className="compass-ring ring-inner" />
+            <div className="compass-orbit">
+              {categories.slice(0, 8).map((category, index) => (
+                <span key={category.id} className="compass-label" style={{ '--i': index } as React.CSSProperties}>
+                  <i><b>{category.mark}</b></i>
+                </span>
+              ))}
+            </div>
             <div className="compass-core">
-              <Compass size={28} strokeWidth={1.3} />
+              <Compass size={26} strokeWidth={1.3} />
               <strong>十六部</strong>
               <span>六十类</span>
             </div>
-            {categories.slice(0, 8).map((category, index) => (
-              <span key={category.id} className={`compass-label compass-label-${index + 1}`}>{category.mark}</span>
-            ))}
           </div>
           <div className="category-list">
             {categories.map((category, index) => (
@@ -259,6 +368,41 @@ function App() {
             </div>
           </div>
 
+          <div className="generation-console">
+            <div className="generation-console-main">
+              <div className="generation-title">
+                <span><Sparkles size={15} /> Nano Banana 2 Lite</span>
+                <strong>{generation.status === 'running' ? '正在生成本草图像' : generation.status === 'complete' ? '生成任务完成' : generation.status === 'failed' ? '生成任务异常' : generation.status === 'stopped' ? '生成已停止' : '图像生成控制台'}</strong>
+              </div>
+              <div className="generation-progress-line">
+                <div style={{ width: `${generationPercent}%` }} />
+              </div>
+              <div className="generation-metrics">
+                <div><strong>{generation.completed}/{generation.total || generationLimit}</strong><span>进度 {generationPercent}%</span></div>
+                <div><strong>{generation.succeeded}</strong><span>已替换</span></div>
+                <div><strong>{generation.failed}</strong><span>失败</span></div>
+                <div><strong>{formatNumber(generation.totals?.estimatedTotalTokens || generation.estimatedTotalTokens)}</strong><span>估算 token</span></div>
+                <div><strong>{formatUsd(actualStandardUsd ?? generation.estimatedStandardUsd)}</strong><span>标准估算</span></div>
+                <div><strong>{formatUsd(actualBatchUsd ?? generation.estimatedBatchUsd)}</strong><span>批量估算</span></div>
+              </div>
+              <div className="generation-status-row">
+                <span>{generation.current ? `当前：${generation.current.name}` : generation.latest ? `最新：${generation.latest.name}` : '等待启动'}</span>
+                <span>输入 {formatNumber(generation.totals?.promptTokenCount || generation.totals?.estimatedInputTokens || generation.estimatedInputTokens)} · 图片 {formatNumber(generation.totals?.estimatedImageTokens || generation.estimatedImageTokens)}</span>
+              </div>
+            </div>
+
+            <div className="generation-side">
+              <div className="generation-preview">
+                {generation.latest?.imageUrl ? <img src={generation.latest.imageUrl} alt={`${generation.latest.name}生成图`} /> : <div><Leaf size={26} /><span>生成后显示最新图片</span></div>}
+              </div>
+              {generation.status === 'running' ? (
+                <button className="generation-stop" onClick={stopGeneration}>停止生成</button>
+              ) : (
+                <button className="generation-start" onClick={startCurrentPageGeneration}>批量生成当前页</button>
+              )}
+            </div>
+          </div>
+
           {catalogLoading ? (
             <div className="loading-state"><Leaf className="loading-leaf" /> 正在翻阅本草……</div>
           ) : catalog.length ? (
@@ -266,7 +410,16 @@ function App() {
               {catalog.map((entry) => (
                 <button className={`catalog-card atlas-catalog-card status-${entry.media.status}`} key={entry.id} onClick={() => openCatalogDetail(entry)}>
                   <div className="catalog-image">
-                    {entry.media.thumbnailUrl ? (
+                    {entry.media.rawUrl ? (
+                      <div className="plate">
+                        <span className="plate-title">{entry.name}</span>
+                        {(entry.summary || entry.media.note) && <span className="plate-note">{entry.summary || entry.media.note}</span>}
+                        <div className="plate-figure">
+                          <img src={entry.media.rawUrl} alt={`${entry.name}本草图`} loading="lazy" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }} />
+                        </div>
+                        <span className="plate-seal" aria-hidden="true"><b>本</b><b>草</b><b>綱</b><b>目</b></span>
+                      </div>
+                    ) : entry.media.thumbnailUrl ? (
                       <img src={entry.media.thumbnailUrl} alt={`${entry.name}开放素材图`} loading="lazy" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = 'none' }} />
                     ) : (
                       <div className="catalog-placeholder"><Leaf size={28} strokeWidth={1.1} /><span>图像整理中</span></div>
@@ -274,6 +427,16 @@ function App() {
                     <span className="catalog-status">
                       {entry.media.status === 'matched' ? <><CheckCircle2 size={12} /> 已核验</> : entry.media.status === 'review' ? '待复核' : entry.media.status === 'missing' ? <><ImageOff size={12} /> 缺图</> : '待处理'}
                     </span>
+                    <button
+                      className="card-generate-button"
+                      disabled={generation.status === 'running'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        startEntryGeneration(entry)
+                      }}
+                    >
+                      {isGeneratedMedia(entry) ? '重新生成' : '生成'}
+                    </button>
                   </div>
                   <div className="catalog-card-body">
                     <span>{categories.find((category) => category.id === entry.category)?.name} · {entry.chapter}</span>
@@ -329,8 +492,8 @@ function App() {
             <aside className="detail-aside">
               <button className="detail-back" onClick={closeDetail} aria-label="返回百草图鉴"><ArrowLeft size={18} /> 返回图鉴</button>
               <div className="detail-image">
-                {selected.media.thumbnailUrl ? (
-                  <img src={selected.media.thumbnailUrl} alt={selected.name} referrerPolicy="no-referrer" />
+                {selected.media.rawUrl || selected.media.imageUrl || selected.media.thumbnailUrl ? (
+                  <img src={selected.media.rawUrl || selected.media.imageUrl || selected.media.thumbnailUrl} alt={selected.name} referrerPolicy="no-referrer" />
                 ) : (
                   <div className="detail-image-placeholder"><Leaf size={48} strokeWidth={1} /><span>暂无对应图像</span></div>
                 )}
@@ -364,14 +527,34 @@ function App() {
                 <div className="detail-loading"><LoaderCircle size={28} /> 正在展开原典条目……</div>
               ) : (
                 <div className="detail-sections">
+                  {detail.summary && (
+                    <div className="detail-summary">
+                      <span className="detail-summary-label">简介</span>
+                      <p>{detail.summary}</p>
+                    </div>
+                  )}
                   {detail.sections.map((section, index) => (
-                    <section className={`detail-section kind-${section.kind}`} key={`${section.title}-${index}`}>
+                    <section className={`detail-section kind-${section.kind}`} key={section.kind}>
                       <div className="detail-section-title">
                         <span>{String(index + 1).padStart(2, '0')}</span>
                         <div><small>{detailKindLabels[section.kind] || '原典记述'}</small><h3>{section.title}</h3></div>
                       </div>
                       <div className="detail-section-copy">
-                        {section.content.split(/\n\n+/).map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}
+                        {section.original ? (
+                          <>
+                            <div className="sec-original">
+                              {section.original.split(/\n\n+/).map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}
+                            </div>
+                            {section.translation && (
+                              <div className="sec-translation">
+                                <span className="sec-label">译文</span>
+                                {section.translation.split(/\n\n+/).map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <p className="sec-empty">原著未载此项</p>
+                        )}
                       </div>
                     </section>
                   ))}

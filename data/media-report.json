@@ -1,9 +1,9 @@
 {
   "catalogTotal": 1712,
-  "processed": 732,
-  "matched": 702,
-  "review": 21,
+  "processed": 930,
+  "matched": 902,
+  "review": 19,
   "missing": 9,
-  "pending": 980,
-  "generatedAt": "2026-06-24T12:17:09.061Z"
+  "pending": 782,
+  "generatedAt": "2026-07-05T13:22:47.733Z"
 }

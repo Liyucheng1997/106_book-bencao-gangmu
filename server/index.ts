@@ -1,12 +1,13 @@
 import cors from 'cors'
 import { load } from 'cheerio'
 import express from 'express'
-import { existsSync, readFileSync } from 'node:fs'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { categories, herbs } from './data.js'
 
 const app = express()
-const port = Number(process.env.PORT || 8787)
+const port = Number(process.env.API_PORT || 8791)
 
 app.use(cors())
 app.use(express.json())
@@ -62,14 +63,114 @@ type MediaEntry = {
   status: 'matched' | 'review' | 'missing'
   confidence: 'high' | 'medium' | 'none'
   thumbnailUrl?: string
+  imageUrl?: string
+  rawUrl?: string
+  note?: string
   sourcePage?: string
   license?: string
   artist?: string
   matchedTitle?: string
 }
 
+type GenerationStatus = 'idle' | 'running' | 'complete' | 'failed' | 'stopped'
+
+type GenerationJob = {
+  id: string
+  status: GenerationStatus
+  startedAt?: string
+  endedAt?: string
+  total: number
+  completed: number
+  succeeded: number
+  failed: number
+  reused: number
+  current?: { id: string; name: string }
+  latest?: { id: string; name: string; imageUrl?: string; error?: string }
+  model: string
+  mode: string
+  style?: string
+  limit?: number
+  category?: string
+  overwrite: boolean
+  estimatedInputTokens: number
+  estimatedImageTokens: number
+  estimatedTotalTokens: number
+  estimatedStandardUsd: number
+  estimatedBatchUsd: number
+  totals?: Record<string, number>
+  pricing?: Record<string, number>
+  logs: string[]
+  process?: ChildProcessWithoutNullStreams
+}
+
 const readJson = <T>(path: string, fallback: T): T => {
   try { return JSON.parse(readFileSync(resolve(process.cwd(), path), 'utf8')) as T } catch { return fallback }
+}
+
+let generationJob: GenerationJob = {
+  id: 'idle',
+  status: 'idle',
+  total: 0,
+  completed: 0,
+  succeeded: 0,
+  failed: 0,
+  reused: 0,
+  model: 'gemini-3.1-flash-lite-image',
+  mode: 'pending',
+  overwrite: false,
+  estimatedInputTokens: 0,
+  estimatedImageTokens: 0,
+  estimatedTotalTokens: 0,
+  estimatedStandardUsd: 0,
+  estimatedBatchUsd: 0,
+  logs: [],
+}
+
+const publicJob = () => {
+  const { process: _process, ...job } = generationJob
+  return job
+}
+
+const appendGenerationLog = (line: string) => {
+  const trimmed = line.trim()
+  if (!trimmed) return
+  generationJob.logs = [...generationJob.logs, trimmed].slice(-80)
+}
+
+const numberValue = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0
+
+const applyProgressEvent = (event: Record<string, any>) => {
+  if (event.type === 'start') {
+    generationJob.total = numberValue(event.total)
+    generationJob.estimatedInputTokens = numberValue(event.estimatedInputTokens)
+    generationJob.estimatedImageTokens = numberValue(event.estimatedImageTokens)
+    generationJob.estimatedTotalTokens = numberValue(event.estimatedTotalTokens)
+    generationJob.estimatedStandardUsd = numberValue(event.estimatedStandardUsd)
+    generationJob.estimatedBatchUsd = numberValue(event.estimatedBatchUsd)
+    generationJob.pricing = event.pricing || generationJob.pricing
+  }
+  if (event.type === 'entry-start') {
+    generationJob.current = { id: String(event.id), name: String(event.name) }
+  }
+  if (event.type === 'entry-success') {
+    generationJob.completed += 1
+    generationJob.succeeded += 1
+    generationJob.latest = { id: String(event.id), name: String(event.name), imageUrl: String(event.imageUrl || '') }
+    generationJob.totals = event.totals || generationJob.totals
+  }
+  if (event.type === 'entry-reuse') {
+    generationJob.completed += 1
+    generationJob.reused += 1
+    generationJob.latest = { id: String(event.id), name: String(event.name), imageUrl: String(event.imageUrl || '') }
+  }
+  if (event.type === 'entry-failure') {
+    generationJob.completed += 1
+    generationJob.failed += 1
+    generationJob.latest = { id: String(event.id), name: String(event.name), error: String(event.error || '') }
+  }
+  if (event.type === 'done') {
+    generationJob.totals = event.totals || generationJob.totals
+  }
 }
 
 const categoryOrder = ['water', 'fire', 'earth', 'metal-stone', 'herb', 'grain', 'vegetable', 'fruit', 'wood', 'utensil', 'insect', 'scale', 'shell', 'bird', 'beast', 'human']
@@ -87,6 +188,39 @@ const sortOriginal = (a: CatalogEntry, b: CatalogEntry) =>
   || a.chapterOrder - b.chapterOrder
 
 const detailCache = new Map<string, { sections: Array<{ title: string; kind: string; content: string }>; sourceUrl: string; retrievedAt: string }>()
+
+// 本地正文（含 DeepSeek 译文/简介），带 mtime 缓存，脚本更新后自动生效。
+type LocalSection = { kind: string; title: string; original: string; translation?: string }
+type LocalDetail = { id: string; name: string; sourceUrl: string; retrievedAt: string; summary?: string; sections: LocalSection[] }
+let detailsStore: Record<string, LocalDetail> = {}
+let detailsMtime = -1
+const loadDetailsStore = () => {
+  try {
+    const stat = statSync('data/catalog-details.json')
+    if (stat.mtimeMs !== detailsMtime) {
+      detailsStore = JSON.parse(readFileSync('data/catalog-details.json', 'utf8'))
+      detailsMtime = stat.mtimeMs
+    }
+  } catch {
+    // 本地正文尚未生成，走实时抓取回退。
+  }
+  return detailsStore
+}
+
+const CANON_KINDS = ['names', 'form', 'preparation', 'properties', 'uses', 'commentary', 'prescriptions'] as const
+const CANON_TITLES: Record<string, string> = {
+  names: '释名', form: '集解', preparation: '修治', properties: '气味', uses: '主治', commentary: '发明', prescriptions: '附方',
+}
+// 实时抓取回退时，把解析段归一到固定 7 项（无译文/简介）。
+const toCanonicalSections = (sections: Array<{ kind: string; content: string }>): LocalSection[] => {
+  const buckets: Record<string, string[]> = { names: [], form: [], preparation: [], properties: [], uses: [], commentary: [], prescriptions: [] }
+  for (const section of sections) {
+    const kind = section.kind === 'overview' ? 'names' : section.kind === 'other' ? 'commentary' : section.kind
+    const content = (section.content || '').trim()
+    if (buckets[kind] && content && !buckets[kind].includes(content)) buckets[kind].push(content)
+  }
+  return CANON_KINDS.map((kind) => ({ kind, title: CANON_TITLES[kind], original: buckets[kind].join('\n\n') }))
+}
 
 const sectionKind = (title: string) => {
   if (title.includes('释名') || title.includes('釋名')) return 'names'
@@ -187,9 +321,11 @@ app.get('/api/catalog', (req, res) => {
       && (mediaStatus === 'all' || status === mediaStatus)
   })
   const start = (page - 1) * limit
+  const details = loadDetailsStore()
   const data = filtered.slice(start, start + limit).map((entry) => ({
     ...entry,
     media: mediaById.get(entry.id) || { status: 'pending', confidence: 'none' },
+    summary: details[entry.id]?.summary,
   }))
   res.json({ data, meta: { total: filtered.length, page, limit, pages: Math.ceil(filtered.length / limit) } })
 })
@@ -203,20 +339,139 @@ app.get('/api/catalog/stats', (_req, res) => {
   res.json({ data: { total: catalog.length, matched, review, missing, pending: Math.max(0, catalog.length - media.length) } })
 })
 
+app.get('/api/generation/status', (_req, res) => res.json({ data: publicJob() }))
+
+app.post('/api/generation/start', (req, res) => {
+  if (generationJob.status === 'running') return res.status(409).json({ error: '已有图片生成任务正在运行', data: publicJob() })
+  const mode = ['all', 'unmatched', 'missing', 'pending'].includes(String(req.body?.mode)) ? String(req.body.mode) : 'pending'
+  const limit = Math.max(1, Math.min(1712, Number(req.body?.limit || 5)))
+  const concurrency = Math.max(1, Math.min(4, Number(req.body?.concurrency || 1)))
+  const delayMs = Math.max(0, Number(req.body?.delayMs || 700))
+  const category = String(req.body?.category || '').trim()
+  const id = String(req.body?.id || '').trim()
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((value: unknown) => String(value)).filter(Boolean) : []
+  const overwrite = Boolean(req.body?.overwrite)
+  const model = String(req.body?.model || 'gemini-3.1-flash-lite-image')
+  const style = ['labeled-note', 'classic-page', 'clean-specimen', 'museum-card'].includes(String(req.body?.style)) ? String(req.body.style) : 'labeled-note'
+  const jobId = `nano-${Date.now()}`
+  const idsFile = ids.length ? resolve(process.cwd(), `data/generation-selection-${jobId}.json`) : undefined
+  if (idsFile) writeFileSync(idsFile, `${JSON.stringify(ids, null, 2)}\n`, 'utf8')
+  const tsxCli = resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs')
+  const args = [
+    tsxCli,
+    'scripts/generate-nano-banana-images.ts',
+    '--progress-json',
+    '--mode', mode,
+    '--limit', String(limit),
+    '--concurrency', String(concurrency),
+    '--delay-ms', String(delayMs),
+    '--model', model,
+    '--style', style,
+    '--aspect-ratio', '16:9',
+    '--detail-api', `http://127.0.0.1:${port}`,
+  ]
+  if (idsFile) args.push('--ids-file', idsFile)
+  if (category && category !== 'all') args.push('--category', category)
+  if (id) args.push('--id', id)
+  if (overwrite) args.push('--overwrite')
+
+  generationJob = {
+    id: jobId,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    total: 0,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    reused: 0,
+    model,
+    style,
+    mode,
+    limit,
+    category: category || undefined,
+    overwrite,
+    estimatedInputTokens: 0,
+    estimatedImageTokens: 0,
+    estimatedTotalTokens: 0,
+    estimatedStandardUsd: 0,
+    estimatedBatchUsd: 0,
+    logs: [`启动：node ${args.join(' ')}`],
+  }
+
+  let child: ChildProcessWithoutNullStreams
+  try {
+    child = spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    })
+  } catch (error) {
+    generationJob.status = 'failed'
+    generationJob.endedAt = new Date().toISOString()
+    appendGenerationLog(error instanceof Error ? error.message : String(error))
+    return res.status(500).json({ error: '生成进程启动失败', data: publicJob() })
+  }
+  generationJob.process = child
+  let stdoutBuffer = ''
+  let stderrBuffer = ''
+  const handleLine = (line: string) => {
+    if (line.startsWith('__NANO_PROGRESS__')) {
+      try { applyProgressEvent(JSON.parse(line.slice('__NANO_PROGRESS__'.length))) } catch { appendGenerationLog(line) }
+      return
+    }
+    appendGenerationLog(line)
+  }
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString()
+    const lines = stdoutBuffer.split(/\r?\n/)
+    stdoutBuffer = lines.pop() || ''
+    lines.forEach(handleLine)
+  })
+  child.stderr.on('data', (chunk) => {
+    stderrBuffer += chunk.toString()
+    const lines = stderrBuffer.split(/\r?\n/)
+    stderrBuffer = lines.pop() || ''
+    lines.forEach(handleLine)
+  })
+  child.on('close', (code) => {
+    if (stdoutBuffer) handleLine(stdoutBuffer)
+    if (stderrBuffer) handleLine(stderrBuffer)
+    generationJob.endedAt = new Date().toISOString()
+    generationJob.status = generationJob.status === 'stopped' ? 'stopped' : code === 0 ? 'complete' : 'failed'
+    appendGenerationLog(`任务结束：exit ${code}`)
+    generationJob.process = undefined
+  })
+  return res.json({ data: publicJob() })
+})
+
+app.post('/api/generation/stop', (_req, res) => {
+  if (generationJob.status !== 'running' || !generationJob.process) return res.json({ data: publicJob() })
+  generationJob.status = 'stopped'
+  generationJob.process.kill()
+  appendGenerationLog('已请求停止当前生成任务')
+  return res.json({ data: publicJob() })
+})
+
 app.get('/api/catalog/:id', async (req, res) => {
   const catalog = readJson<CatalogEntry[]>('data/catalog.json', [])
   const media = readJson<MediaEntry[]>('data/media-manifest.json', [])
   const entry = catalog.find((item) => item.id === req.params.id)
   if (!entry) return res.status(404).json({ error: '未找到该本草条目' })
+  const mediaEntry = media.find((item) => item.entryId === entry.id) || { status: 'pending', confidence: 'none' }
+  const local = loadDetailsStore()[entry.id]
+  if (local && Array.isArray(local.sections) && local.sections.length) {
+    return res.json({ data: { ...entry, media: mediaEntry, sections: local.sections, summary: local.summary, sourceUrl: local.sourceUrl, retrievedAt: local.retrievedAt } })
+  }
   try {
     const detail = await fetchCatalogDetail(entry)
-    return res.json({ data: { ...entry, media: media.find((item) => item.entryId === entry.id) || { status: 'pending', confidence: 'none' }, ...detail } })
+    return res.json({ data: { ...entry, media: mediaEntry, sections: toCanonicalSections(detail.sections), sourceUrl: detail.sourceUrl, retrievedAt: detail.retrievedAt } })
   } catch (error) {
     return res.status(502).json({ error: '原典内容暂时无法载入', detail: String(error), sourceUrl: `${entry.sourceUrl}#${entry.sourceAnchor}` })
   }
 })
 
 const distPath = resolve(process.cwd(), 'dist')
+const publicPath = resolve(process.cwd(), 'public')
+if (existsSync(publicPath)) app.use(express.static(publicPath))
 if (existsSync(distPath)) {
   app.use(express.static(distPath))
   app.use((req, res, next) => {
