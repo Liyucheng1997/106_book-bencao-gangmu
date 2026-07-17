@@ -7,7 +7,7 @@
 (() => {
   'use strict';
 
-  const BASE = '/bencao-wanxiang/';
+  const BASE = '/106_book-bencao-gangmu/';
   const json = (data, status) => new Response(JSON.stringify(data), {
     status: status || 200, headers: { 'Content-Type': 'application/json' }
   });
@@ -22,7 +22,7 @@
           for (const k in obj){
             const v = obj[k];
             if (typeof v === 'string' && /^\/(generated-herbs|herbs)\//.test(v))
-              obj[k] = '/bencao-wanxiang' + v;
+              obj[k] = '/106_book-bencao-gangmu' + v;
             else if (v && typeof v === 'object') fix(v);
           }
         };
