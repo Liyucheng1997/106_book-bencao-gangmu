@@ -14,7 +14,22 @@
 
   const cache = {};
   async function load(name){
-    if (!cache[name]) cache[name] = (async () => (await realFetch(BASE + name)).json())();
+    if (!cache[name]) cache[name] = (async () => {
+      const data = await (await realFetch(BASE + name)).json();
+      /* 数据里存的本地图片路径是站点根目录的绝对路径，补上子路径前缀 */
+      if (name === 'data/media-manifest.json'){
+        const fix = obj => {
+          for (const k in obj){
+            const v = obj[k];
+            if (typeof v === 'string' && /^\/(generated-herbs|herbs)\//.test(v))
+              obj[k] = '/bencao-wanxiang' + v;
+            else if (v && typeof v === 'object') fix(v);
+          }
+        };
+        data.forEach(fix);
+      }
+      return data;
+    })();
     return cache[name];
   }
 
