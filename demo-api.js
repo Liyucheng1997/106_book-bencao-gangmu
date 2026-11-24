@@ -1,35 +1,38 @@
 /* ================================================================
-   静态演示后端 —— 本草万象。
-   数据（1,712 条目 + 图片清单 + 原典正文）打包为静态 JSON，
-   目录筛选 / 排序 / 分页逻辑在浏览器内复刻服务器实现。
+   静态演示后端 —— 本草万象（GitHub Pages 用）。
+   由 scripts/build-pages.ts 打包：目录、图片清单、简介为小 JSON，
+   原典正文按条目拆成 data/details/{id}.json，打开详情时才加载。
+   目录筛选 / 排序 / 分页逻辑在浏览器内复刻 server/index.ts。
    图片批量生成为本地工具链功能，线上只读展示。
    ================================================================ */
 (() => {
   'use strict';
 
-  const BASE = '/106_book-bencao-gangmu/';
+  /* 站点根路径取自本脚本自身的地址，部署到任何子路径都不用改代码 */
+  const BASE = new URL('./', document.currentScript.src).pathname;
+  const PREFIX = BASE.replace(/\/$/, '');
   const json = (data, status) => new Response(JSON.stringify(data), {
     status: status || 200, headers: { 'Content-Type': 'application/json' }
   });
 
+  /* 数据里的本地图片路径是站点根目录的绝对路径，补上子路径前缀 */
+  const fixPaths = obj => {
+    for (const k in obj){
+      const v = obj[k];
+      if (typeof v === 'string' && /^\/(generated-herbs|herbs)\//.test(v)) obj[k] = PREFIX + v;
+      else if (v && typeof v === 'object') fixPaths(v);
+    }
+    return obj;
+  };
+
   const cache = {};
-  async function load(name){
-    if (!cache[name]) cache[name] = (async () => {
-      const data = await (await realFetch(BASE + name)).json();
-      /* 数据里存的本地图片路径是站点根目录的绝对路径，补上子路径前缀 */
-      if (name === 'data/media-manifest.json'){
-        const fix = obj => {
-          for (const k in obj){
-            const v = obj[k];
-            if (typeof v === 'string' && /^\/(generated-herbs|herbs)\//.test(v))
-              obj[k] = '/106_book-bencao-gangmu' + v;
-            else if (v && typeof v === 'object') fix(v);
-          }
-        };
-        data.forEach(fix);
-      }
-      return data;
-    })();
+  function load(name){
+    if (!cache[name]) cache[name] = realFetch(BASE + name).then(async response => {
+      if (!response.ok) throw new Error(response.status + ' ' + name);
+      const data = await response.json();
+      return name === 'data/media-manifest.json' ? data.map(fixPaths) : data;
+    });
+    cache[name].catch(() => delete cache[name]);
     return cache[name];
   }
 
@@ -48,7 +51,6 @@
     || a.chapterOrder - b.chapterOrder;
 
   async function handle(url, opts){
-    const method = ((opts && opts.method) || 'GET').toUpperCase();
     const u = new URL(url, location.href);
     const path = u.pathname.replace(/^.*\/api\//, '/api/');
     const q = u.searchParams;
@@ -62,9 +64,10 @@
       return json({ error: '演示版为只读图鉴 —— 图片批量生成属于本地工具链（Nano Banana + 质检流水线）' }, 403);
 
     if (path === '/api/catalog'){
-      const catalog = [...await load('data/catalog.json')];
-      const media = await load('data/media-manifest.json');
-      const details = await load('data/catalog-details.json');
+      const [catalogData, media, summaries] = await Promise.all([
+        load('data/catalog.json'), load('data/media-manifest.json'), load('data/summaries.json'),
+      ]);
+      const catalog = [...catalogData];
       const mediaById = new Map(media.map(m => [m.entryId, m]));
       const sort = q.get('sort') || 'original';
       catalog.sort(sort === 'name'
@@ -86,20 +89,20 @@
       const data = filtered.slice(start, start + limit).map(entry => ({
         ...entry,
         media: mediaById.get(entry.id) || { status: 'pending', confidence: 'none' },
-        summary: (details[entry.id] || {}).summary
+        summary: summaries[entry.id],
       }));
       return json({ data, meta: { total: filtered.length, page, limit, pages: Math.ceil(filtered.length / limit) } });
     }
 
     const mId = path.match(/^\/api\/catalog\/([^/]+)$/);
     if (mId){
-      const catalog = await load('data/catalog.json');
-      const media = await load('data/media-manifest.json');
-      const details = await load('data/catalog-details.json');
-      const entry = catalog.find(item => item.id === decodeURIComponent(mId[1]));
+      const id = decodeURIComponent(mId[1]);
+      const [catalog, media] = await Promise.all([load('data/catalog.json'), load('data/media-manifest.json')]);
+      const entry = catalog.find(item => item.id === id);
       if (!entry) return json({ error: '未找到该本草条目' }, 404);
       const mediaEntry = media.find(m => m.entryId === entry.id) || { status: 'pending', confidence: 'none' };
-      const local = details[entry.id];
+      let local = null;
+      try { local = await load('data/details/' + encodeURIComponent(id) + '.json'); } catch (error) { /* 无本地正文 */ }
       if (local && Array.isArray(local.sections) && local.sections.length)
         return json({ data: { ...entry, media: mediaEntry, sections: local.sections,
           summary: local.summary, sourceUrl: local.sourceUrl, retrievedAt: local.retrievedAt } });
