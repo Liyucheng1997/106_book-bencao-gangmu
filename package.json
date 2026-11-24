@@ -14,7 +14,9 @@
     "media:batch": "tsx scripts/batch-media.ts",
     "media:aliases": "tsx scripts/sparql-media.ts",
     "media:find": "tsx scripts/find-open-images.ts",
-    "media:nano": "tsx scripts/generate-nano-banana-images.ts"
+    "media:nano": "tsx scripts/generate-nano-banana-images.ts",
+    "pages:build": "tsx scripts/build-pages.ts",
+    "pages:deploy": "tsx scripts/build-pages.ts --deploy"
   },
   "dependencies": {
     "cheerio": "^1.2.0",

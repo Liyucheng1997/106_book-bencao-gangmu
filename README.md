@@ -8,7 +8,14 @@
 
 静态演示站点：<https://liyucheng1997.github.io/106_book-bencao-gangmu/>
 
-站点内容存放在本仓库的 `gh-pages` 分支：目录数据与原典正文已静态化为 JSON，由 `demo-api.js` 在浏览器内复刻服务器逻辑，线上无需后端。图片批量生成为本地工具链功能，线上只读展示。更新站点时，重新生成静态资源后推送到 `gh-pages` 分支即可（注意资源内的绝对路径需带 `/106_book-bencao-gangmu/` 子路径前缀）。
+站点内容存放在本仓库的 `gh-pages` 分支：目录数据与原典正文已静态化为 JSON，由 [pages/demo-api.js](pages/demo-api.js) 在浏览器内复刻服务器逻辑，线上无需后端。图片批量生成为本地工具链功能，线上只读展示。
+
+```bash
+npm run pages:build    # 构建到 dist-pages/，可本地预览
+npm run pages:deploy   # 构建并推送到 gh-pages 分支
+```
+
+列表只加载目录、精简后的图片清单和简介（gzip 后约 300KB）；原典正文按条目拆成 `data/details/{id}.json`，点开详情时才下载对应的一个文件。前端用相对路径构建，`demo-api.js` 从自身地址推出站点根路径，部署到任何子路径都不用改代码。
 
 ## 本地开发
 
