@@ -22,3 +22,4 @@ scripts/__pycache__/
 /public/generated-herbs/*.webp
 
 .DS_Store
+data/media-candidates.json

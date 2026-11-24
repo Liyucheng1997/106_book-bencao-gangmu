@@ -59,9 +59,18 @@ npm run media:aliases
 # 对未匹配条目逐个检索 Wikimedia Commons，输出待复核候选
 npm run media:match -- --limit=50
 
+# 批量找开放图片（推荐）：原名 → 考订现代名 → 维基百科条目首图，先出候选、人工复核后再写入
+npm run media:find -- --stage direct     # 原名 / 繁体名直接查中文维基首图
+npm run media:find -- --stage identify   # Gemini 结合《集解》考订现代物种、矿物、器物名
+npm run media:find -- --stage modern     # 用现代中文名、学名查中 / 英文维基首图
+# 复核 data/media-candidates.json，把不对的候选标 "accepted": false，然后：
+npm run media:find -- --apply
+
 # 使用 Nano Banana 2 Lite 为目录条目生成本地统一风格图片
 npm run media:nano -- --dry-run --mode all --limit=3
 ```
+
+图片优先用开放许可的实物照片，找不到或对不上的才生成示意图。2026-11 整理后：1,712 条全部配图，其中 1,074 条为 Wikimedia Commons 实物照片（详情页标注作者、许可，经考订对应的注明现代名与学名），其余 638 条为 Nano Banana 依原典记述绘制（卡片用 `public/generated-herbs/thumb/` 下 640px WebP 小图，详情页才加载原图；小图由 `python scripts/make-thumbs.py` 生成，生图脚本也会自动生成）。人部条目不画人体或体液，一律以药罐、药包等器物静物象征。
 
 真正调用 Gemini API 前，在项目根目录创建 `.env.local`：
 

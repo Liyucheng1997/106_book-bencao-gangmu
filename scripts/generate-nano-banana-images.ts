@@ -56,6 +56,8 @@ type Options = {
   progressJson: boolean
   style: 'labeled-note' | 'classic-page' | 'clean-specimen' | 'museum-card'
   idsFile?: string
+  /** 附加到提示词末尾的单次指令，用于个别条目返工 */
+  extraPrompt?: string
 }
 
 type UsageMetadata = {
@@ -227,6 +229,7 @@ const parseArgs = (): Options => {
     progressJson: args.includes('--progress-json'),
     style: (readValue('--style') || 'labeled-note') as Options['style'],
     idsFile: readValue('--ids-file'),
+    extraPrompt: readValue('--extra-prompt'),
   }
 }
 
@@ -247,9 +250,11 @@ const getDetailSections = async (entry: CatalogEntry, detailApi?: string, attemp
     try {
       const response = await fetch(`${detailApi}/api/catalog/${entry.id}`)
       if (response.ok) {
-        const payload = await response.json() as { data?: { sections?: DetailSection[] } }
+        // 本地正文库返回 original（文言原文），实时抓取回退返回 content，两者统一成 content。
+        const payload = await response.json() as { data?: { sections?: Array<DetailSection & { original?: string }> } }
         return (payload.data?.sections || [])
-          .filter((section) => ['names', 'form', 'overview', 'properties', 'uses'].includes(section.kind))
+          .map((section) => ({ ...section, content: section.content ?? section.original ?? '' }))
+          .filter((section) => section.content && ['names', 'form', 'overview', 'properties', 'uses'].includes(section.kind))
       }
     } catch {
       // 网络异常，进入重试
@@ -287,16 +292,21 @@ const stylePrompt = (style: Options['style'], entry: CatalogEntry) => {
   return [
     'Generate only the specimen illustration layer. Do not do any page layout.',
     'No text, no Chinese characters, no English, no title, no note, no seal, no border, no frame, no drop shadow, no watermark.',
+    'Absolutely no writing anywhere: no captions, no labels next to parts, no annotation lines, no calligraphy, no inscriptions on objects. The page must contain the specimen only.',
     'Center the specimen on plain warm rice paper. Full object visible, with enough blank margin for later fixed layout.',
   ].join('\n')
 }
 
-const promptForEntry = (entry: CatalogEntry, options: Pick<Options, 'style'>, detailSummary: string) => {
+const promptForEntry = (entry: CatalogEntry, options: Pick<Options, 'style' | 'extraPrompt'>, detailSummary: string) => {
   const exactName = entry.traditionalName && entry.traditionalName !== entry.name
     ? `${entry.name}（原文名：${entry.traditionalName}）`
     : entry.name
   const sensitiveGuidance = entry.category === 'human'
-    ? 'If the subject is human-origin material, depict it only as a non-graphic historical materia medica museum specimen, sealed container, neutral texture, or symbolic study object. No gore, no wounds, no bodily fluids, no disturbing anatomy.'
+    ? [
+      'This entry comes from the "human" chapter of the historical text. Never depict a human body, face, body part, organ, bone, skull, blood, bodily fluid, excrement, wound, or corpse.',
+      'If the subject is hair, show a neat coiled bundle of black hair resting on paper. If it is a stone, crystal, or mineral-like preparation (such as 秋石, 淋石, 癖石), show that small object as a mineral specimen.',
+      'For everything else, show a calm symbolic still life of Ming-dynasty apothecary objects instead: for example a lidded celadon or blue-and-white porcelain medicine jar, a folded paper medicine packet tied with string, a small wooden apothecary drawer, or a bronze mortar. Vary the vessel and arrangement for each entry. No gore, nothing disturbing.',
+    ].join(' ')
     : entry.category === 'beast' || entry.category === 'bird' || entry.category === 'scale' || entry.category === 'insect' || entry.category === 'shell'
       ? 'If the subject is animal, insect, fish, shell, or a derived material, show a dignified natural-history specimen or living organism in a calm educational style. No cruelty, no dissection, no blood.'
       : 'Show the recognizable natural material, plant, mineral, food, tool, or medicinal part as a clean educational specimen.'
@@ -311,10 +321,11 @@ const promptForEntry = (entry: CatalogEntry, options: Pick<Options, 'style'>, de
     'Accuracy requirements: prioritize the identifiable medicinal material and its diagnostic morphology. For plants, show the plant part used in materia medica and, when useful, one restrained botanical cue such as leaf, flower, fruit, root, rhizome, bark, seed, or mineral texture. For minerals and non-plant entries, show a clear museum-specimen view.',
     'Composition: wide landscape 16:9 raw specimen image, centered single subject, high clarity, full object visible, no cropping of the specimen. Leave generous blank paper margin for later square-card layout. Do not add any layout elements.',
     stylePrompt(options.style, entry),
+    options.extraPrompt ? `Additional direction for this entry: ${options.extraPrompt}` : '',
   ].filter(Boolean).join('\n')
 }
 
-const planForEntry = async (entry: CatalogEntry, options: Pick<Options, 'detailApi' | 'style'>): Promise<PromptPlan> => {
+const planForEntry = async (entry: CatalogEntry, options: Pick<Options, 'detailApi' | 'style' | 'extraPrompt'>): Promise<PromptPlan> => {
   const detailSections = await getDetailSections(entry, options.detailApi)
   const detailSummary = detailSummaryForSections(detailSections)
   return {
@@ -572,6 +583,12 @@ const main = async () => {
         await writeFile(rawPath, Buffer.from(image.data, 'base64'))
         // 不再合成 1:1 题签图：直接提供无字原图，标题与说明由前端叠加，便于随时调整字体与字号。
         const publicUrl = `/${options.outputDir.replace(/^public[\\/]/, '').replace(/\\/g, '/')}/raw/${entry.id}${extension}`
+        // 图鉴卡片用 640px WebP 小图，原图只在详情页加载。
+        const thumbPath = resolve(options.outputDir, 'thumb', `${entry.id}.webp`)
+        const thumbResult = spawnSync('python', ['scripts/make-thumbs.py', '--raw', rawPath, '--out', thumbPath], { cwd: process.cwd(), encoding: 'utf8' })
+        const thumbUrl = thumbResult.status === 0
+          ? `/${options.outputDir.replace(/^public[\\/]/, '').replace(/\\/g, '/')}/thumb/${entry.id}.webp`
+          : publicUrl
         const now = new Date().toISOString()
         mediaById.set(entry.id, {
           entryId: entry.id,
@@ -580,7 +597,7 @@ const main = async () => {
           confidence: 'high',
           provider: 'Google Gemini API / Nano Banana 2 Lite',
           imageUrl: publicUrl,
-          thumbnailUrl: publicUrl,
+          thumbnailUrl: thumbUrl,
           rawUrl: publicUrl,
           note,
           sourcePage: entry.sourceUrl,

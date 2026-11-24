@@ -47,6 +47,7 @@ export type CatalogMedia = {
   license?: string
   artist?: string
   matchedTitle?: string
+  identifiedAs?: string
   provider?: string
   generatedBy?: unknown
 }
